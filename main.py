@@ -22,21 +22,19 @@ def ask_for_range(total):
     end = int(end) if end.isdigit() else total
     return start - 1, end  # yt-dlp uses 0-based index for playlist_items
 
-def get_available_formats(url):
-    ydl_opts = {'quiet': True, 'skip_download': True}
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=False)
-        formats = info.get('formats', [])
-        video_formats = [
-            f"{f['format_id']} - {f.get('resolution', 'audio')} - {f.get('ext')} - {f.get('format_note', '')}"
-            for f in formats if f.get('vcodec') != 'none'
-        ]
-        return info['id'], video_formats
+def get_formats_from_video(video_info):
+    formats = video_info.get('formats', [])
+    video_formats = [
+        f"{f['format_id']} - {f.get('resolution', 'audio')} - {f.get('ext')} - {f.get('format_note', '')}"
+        for f in formats if f.get('vcodec') != 'none'
+    ]
+    return video_formats
 
-def select_video_quality(sample_url):
-    _, formats = get_available_formats(sample_url)
-    console.print("\n📺 Available qualities from sample video:")
-    return get_user_input("Select desired quality ID (e.g., 18, 22, 137):", formats).split()[0]
+def select_quality_from_video(video_info):
+    formats = get_formats_from_video(video_info)
+    console.print("\n📺 Available formats from first video:")
+    selected = get_user_input("Select desired format:", formats)
+    return selected.split()[0]  # Extract format_id
 
 class RichProgressHook:
     def __init__(self):
@@ -62,21 +60,37 @@ def main():
     # Playlist URL
     playlist_url = input("\n🔗 Enter the YouTube playlist URL: ").strip()
 
-    # Sample video for quality detection
-    sample_url = input("🔍 Enter a sample video URL from this playlist (to fetch available formats): ").strip()
-    selected_format_id = select_video_quality(sample_url)
+    # Ask for Chrome profile name
+    chrome_profile = input("\n🧠 Enter your Chrome profile name (e.g., Default, Profile 1, etc.): ").strip() or "Default"
 
-    # Output directory and filename
+    # Get playlist metadata (including first video)
+    ydl_init_opts = {
+        'quiet': True,
+        'extract_flat': False,
+        'cookiesfrombrowser': ('chrome', chrome_profile)
+
+    }
+
+
+    with yt_dlp.YoutubeDL(ydl_init_opts) as ydl:
+        playlist_info = ydl.extract_info(playlist_url, download=False)
+        entries = playlist_info['entries']
+        total_videos = len(entries)
+        first_video = entries[0] if entries else None
+        if not first_video:
+            console.print("[red]No videos found in playlist.[/red]")
+            return
+
+    # Let user choose format from first video
+    selected_format_id = select_quality_from_video(first_video)
+
+    # Output directory and naming
     output_path = input("\n📁 Enter output directory (leave empty for current folder): ").strip() or os.getcwd()
     filename_template = "%(playlist_index)s - %(title)s.%(ext)s"
 
-    # Get playlist info to ask for range
-    with yt_dlp.YoutubeDL({'quiet': True}) as ydl:
-        info = ydl.extract_info(playlist_url, download=False)
-        total_videos = len(info['entries'])
-
+    # Ask for range of videos
     start_index, end_index = ask_for_range(total_videos)
-    videos_to_download = info['entries'][start_index:end_index]
+    videos_to_download = entries[start_index:end_index]
 
     not_found_format = []
 
@@ -94,24 +108,28 @@ def main():
             'format': selected_format_id,
             'outtmpl': os.path.join(output_path, filename_template),
             'progress_hooks': [RichProgressHook()],
-            'quiet': True
+            'quiet': True,
+            'cookiesfrombrowser': ('chrome', chrome_profile),
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([video['webpage_url']])
 
-    # If any videos didn't have selected format
+    # Retry for skipped videos
     if not_found_format:
         console.print("\n⚠️ Some videos didn't have the selected format.")
         reselect = input("Do you want to reselect quality and download them? (y/n): ").strip().lower()
         if reselect == 'y':
-            selected_format_id = select_video_quality(not_found_format[0])
+            with yt_dlp.YoutubeDL({'quiet': True, 'cookiesfrombrowser': ('chrome', chrome_profile)}) as ydl:
+                sample_retry_info = ydl.extract_info(not_found_format[0], download=False)
+            selected_format_id = select_quality_from_video(sample_retry_info)
             for url in not_found_format:
                 ydl_opts = {
                     'format': selected_format_id,
                     'outtmpl': os.path.join(output_path, filename_template),
                     'progress_hooks': [RichProgressHook()],
-                    'quiet': True
+                    'quiet': True,
+                    'cookiesfrombrowser': ('chrome', chrome_profile),
                 }
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     ydl.download([url])
